@@ -185,6 +185,12 @@ kubectl get nodes
 kubectl get pods -A
 ```
 
+```bash
+kubectl label node node4 node-role.kubernetes.io/worker=worker
+kubectl label node node5 node-role.kubernetes.io/worker=worker
+kubectl label node node6 node-role.kubernetes.io/worker=worker
+```
+
 You should see:
 
 * 3 control plane nodes `Ready`
