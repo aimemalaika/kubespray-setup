@@ -54,7 +54,89 @@ pip3 install -r requirements.txt
 
 * `git clone` gets Kubespray code.
 * `requirements.txt` installs Python packages that Ansible needs to run playbooks.
+Sure! Here’s a step-by-step guide to create a user `ansibleAgent`, allow passwordless `sudo`, and set up SSH access for Ansible automation. I’ll break it down clearly.
 
+---
+
+### **1. Create the user**
+
+Run on each server you want to manage:
+
+```bash
+sudo useradd -m -s /bin/bash ansibleAgent
+```
+
+* `-m` creates a home directory (`/home/ansibleAgent`).
+* `-s /bin/bash` sets the default shell.
+
+Set a password (optional for initial login):
+
+```bash
+sudo passwd ansibleAgent
+```
+
+---
+
+### **2. Give the user passwordless sudo**
+
+Create a sudoers file for the user:
+
+```bash
+sudo visudo -f /etc/sudoers.d/ansibleAgent
+```
+
+Add this line:
+
+```
+ansibleAgent ALL=(ALL) NOPASSWD:ALL
+```
+
+* This allows `ansibleAgent` to run any command via sudo **without a password**.
+* Make sure the file permissions are correct:
+
+```bash
+sudo chmod 440 /etc/sudoers.d/ansibleAgent
+```
+
+---
+
+### **3. Set up SSH key authentication**
+
+On your control machine (where Ansible runs):
+
+```bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/ansibleAgent_key
+```
+
+* This generates a private key (`ansibleAgent_key`) and public key (`ansibleAgent_key.pub`).
+
+Copy the public key to the managed server(s):
+
+```bash
+ssh-copy-id -i ~/.ssh/ansibleAgent_key.pub ansibleAgent@<server_ip>
+```
+
+Or manually:
+
+```bash
+mkdir -p /home/ansibleAgent/.ssh
+chmod 700 /home/ansibleAgent/.ssh
+cat ansibleAgent_key.pub >> /home/ansibleAgent/.ssh/authorized_keys
+chmod 600 /home/ansibleAgent/.ssh/authorized_keys
+chown -R ansibleAgent:ansibleAgent /home/ansibleAgent/.ssh
+```
+
+---
+
+### **4. Test SSH connection**
+
+From your control machine:
+
+```bash
+ssh -i ~/.ssh/ansibleAgent_key ansibleAgent@<server_ip>
+```
+
+You should log in **without a password**.
 ---
 
 ## **Step 2: Create inventory for your cluster**
