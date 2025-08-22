@@ -87,14 +87,17 @@ cp -rfp inventory/sample inventory/brd-hq-cluster
         ansible_host: 192.168.1.11
         ip: 192.168.1.11
         access_ip: 192.168.1.11
+        etcd_member_name: etcd1
       node2:
         ansible_host: 192.168.1.12
         ip: 192.168.1.12
         access_ip: 192.168.1.12
+        etcd_member_name: etcd2
       node3:
         ansible_host: 192.168.1.13
         ip: 192.168.1.13
         access_ip: 192.168.1.13
+        etcd_member_name: etcd3
       node4:
         ansible_host: 192.168.1.14
         ip: 192.168.1.14
@@ -205,6 +208,16 @@ You should see:
 * System pods running in `kube-system` namespace
 
 ---
+cluster-info
+
+```bash
+kubectl cluster-info
+```
+component statuses
+
+```bash
+kubectl get componentstatuses
+```
 
 💡 **Tip:**
 
