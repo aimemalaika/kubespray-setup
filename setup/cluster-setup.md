@@ -184,11 +184,18 @@ sudo chown $(id -u):$(id -g) ~/.kube/config
 kubectl get nodes
 kubectl get pods -A
 ```
+How to add labels
 
 ```bash
 kubectl label node node4 node-role.kubernetes.io/worker=worker
 kubectl label node node5 node-role.kubernetes.io/worker=worker
 kubectl label node node6 node-role.kubernetes.io/worker=worker
+```
+
+Hwo to view labels
+
+```bash
+kubectl get nodes --show-labels
 ```
 
 You should see:
