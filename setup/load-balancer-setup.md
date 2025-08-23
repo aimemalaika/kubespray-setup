@@ -1,142 +1,184 @@
-# Kubernetes HA Load Balancer Setup Documentation
+# **High Availability OpenShift API Setup (No Extra Hardware)**
 
-## 1️⃣ Overview
+## **Overview**
 
-This document describes the configuration of a **highly available (HA) load balancer** in front of the Kubernetes control plane, using **HAProxy + Keepalived**. The purpose is to provide a **single, highly available API endpoint** for the cluster, with automatic failover between LB nodes.
+This setup provides a **highly available OpenShift API endpoint** using the existing control plane nodes without adding extra hardware.
 
-* **Cluster Name:** `brd-hq-cluster`
-* **Cluster Domain:** `brd-hq-cluster.brd.rw`
-* **Load Balancer VIP:** `192.168.10.177`
-* **HAProxy Nodes:** `node1` (MASTER), `node2` (BACKUP)
-* **Control Plane Nodes:** `node1`, `node2`, `node3`
-* **Worker Nodes:** `node4`, `node5`, `node6`
-* **Inventory Path:** `inventory/brd-hq-cluster/hosts.yaml`
-* **Group Vars Path:** `inventory/brd-hq-cluster/group_vars/k8s_cluster/k8s-cluster.yml`
+* **API Endpoint:** `brd-hq-cluster.brd.rw`
+* **Standard Port:** 6443
+* **Floating VIP:** 192.168.10.177
 
----
+**Components Used:**
 
-## 2️⃣ Components
-
-### 2.1 HAProxy
-
-* Acts as the **reverse proxy** and load balancer for the Kubernetes API servers.
-* Balances traffic between all control plane nodes (`node1`, `node2`, `node3`).
-* Listens on port `6443` on the **VIP**.
-
-### 2.2 Keepalived
-
-* Provides **high availability** for the VIP.
-* MASTER node owns the VIP, BACKUP monitors it.
-* If MASTER fails, BACKUP takes over the VIP automatically.
-* Communicates between nodes using **VRRP** (Virtual Router Redundancy Protocol).
-* Secured with a password (`haproxy_keepalived_password`).
+* **HAProxy** – Load balances API traffic across all control plane nodes.
+* **Keepalived** – Manages a floating VIP for failover.
+* **iptables NAT** – Forwards traffic from VIP:6443 → HAProxy:8443.
 
 ---
 
-## 3️⃣ Inventory Configuration
+## **Node Information**
 
-### 3.1 Hosts
-
-```yaml
-lb:
-  hosts:
-    node1:   # MASTER
-    node2:   # BACKUP
-
-kube_control_plane:
-  hosts:
-    node1:
-    node2:
-    node3:
-
-kube_node:
-  hosts:
-    node4:
-    node5:
-    node6:
-```
+| Node         | IP             | Role               |
+| ------------ | -------------- | ------------------ |
+| cp1          | 192.168.10.171 | MASTER (VIP owner) |
+| cp2          | 192.168.10.172 | BACKUP             |
+| cp3          | 192.168.10.173 | BACKUP             |
+| Floating VIP | 192.168.10.177 | API endpoint       |
 
 ---
 
-### 3.2 Group Vars (`k8s-cluster.yml`)
+## **Step 1: Install Required Packages**
 
-```yaml
-# Cluster domain
-cluster_name: brd-hq-cluster.brd.rw
-dns_domain: "{{ cluster_name }}"
-
-# HAProxy settings
-apiserver_loadbalancer_domain_name: brd-hq-cluster.brd.rw
-apiserver_loadbalancer_port: 6443
-kube_apiserver_loadbalancer: haproxy
-
-# VIP for HAProxy
-haproxy_apiserver_vip: 192.168.10.177
-
-# Keepalived settings
-haproxy_keepalived_enabled: true
-haproxy_keepalived_interface: ens160    # network interface used for VIP
-haproxy_keepalived_priority_master: 101
-haproxy_keepalived_priority_backup: 100
-haproxy_keepalived_password: "yourpassword"
-```
-
-* Replace `ens160` with the actual network interface used by your LB nodes.
-* Use a secure, shared password for Keepalived authentication.
-
----
-
-## 4️⃣ VIP Behavior
-
-* The VIP (`192.168.10.177`) is **virtual**. It is not manually configured on nodes.
-* Keepalived assigns it dynamically to the MASTER LB node.
-* Failover: If MASTER fails, BACKUP automatically takes over.
-
----
-
-## 5️⃣ Running the Deployment
-
-From Kubespray root directory:
+Run on **all control plane nodes**:
 
 ```bash
-ansible-playbook -i inventory/brd-hq-cluster/hosts.yaml cluster.yml -b -v
+sudo apt update
+sudo apt install -y haproxy keepalived iptables-persistent
 ```
 
-* `-b` → run tasks with sudo
-* `-v` → verbose output
+---
 
-### Verification
+## **Step 2: Configure HAProxy**
+
+**File:** `/etc/haproxy/haproxy.cfg` (on all nodes)
+
+```haproxy
+frontend kube_api
+    bind *:8443
+    mode tcp
+    default_backend kube_api_backend
+
+backend kube_api_backend
+    mode tcp
+    balance roundrobin
+    option tcp-check
+    server cp1 192.168.10.171:6443 check
+    server cp2 192.168.10.172:6443 check
+    server cp3 192.168.10.173:6443 check
+```
+
+**Enable and start HAProxy:**
 
 ```bash
-# Verify nodes and cluster
-kubectl get nodes
-kubectl cluster-info
-
-# Check VIP assignment
-ip addr show ens160 | grep 192.168.10.177
-
-# Test API access via VIP
-curl -k https://192.168.10.177:6443/version
+sudo systemctl enable haproxy
+sudo systemctl start haproxy
+sudo ss -tlnp | grep 8443   # Verify it's listening
 ```
 
 ---
 
-## 6️⃣ Key Points
+## **Step 3: Configure Keepalived**
 
-* **HA API endpoint**: all clients should use `https://192.168.10.177:6443` or `https://brd-hq-cluster.brd.rw:6443`.
-* **MASTER node priority**: higher number = preferred VIP owner.
-* **Backup node**: lower number, takes over if MASTER fails.
-* **Interface selection**: VIP must be on the same subnet as cluster nodes.
+### **cp1 (MASTER)**
+
+**File:** `/etc/keepalived/keepalived.conf`
+
+```text
+vrrp_instance VI_1 {
+    state MASTER
+    interface ens160
+    virtual_router_id 51
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1234
+    }
+    virtual_ipaddress {
+        192.168.10.177
+    }
+}
+```
+
+### **cp2 (BACKUP)**
+
+```text
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ens160
+    virtual_router_id 51
+    priority 90
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1234
+    }
+    virtual_ipaddress {
+        192.168.10.177
+    }
+}
+```
+
+### **cp3 (BACKUP)**
+
+```text
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ens160
+    virtual_router_id 51
+    priority 80
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1234
+    }
+    virtual_ipaddress {
+        192.168.10.177
+    }
+}
+```
+
+**Enable and start Keepalived on all nodes:**
+
+```bash
+sudo systemctl enable keepalived
+sudo systemctl start keepalived
+```
+
+**Verify VIP:**
+
+```bash
+ip addr show | grep 192.168.10.177
+```
 
 ---
 
-## 7️⃣ Notes & Best Practices
+## **Step 4: Set Up iptables NAT Forwarding**
 
-1. Ensure the **VIP is reserved** in your network to avoid IP conflicts.
-2. Keep **all HAProxy nodes in the same subnet** as the VIP.
-3. Keep the **Keepalived password secret**.
-4. For production, monitor HAProxy and Keepalived logs for failover events.
-5. All cluster API traffic should go through the VIP to ensure HA.
+On **all control plane nodes**, forward VIP port 6443 to HAProxy 8443:
 
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/aa4740b6-bdef-43a2-a07a-dfb022365e62" />
+```bash
+sudo iptables -t nat -A PREROUTING -d 192.168.10.177 -p tcp --dport 6443 -j REDIRECT --to-port 8443
+sudo netfilter-persistent save
+```
 
+---
+
+## **Step 5: Testing the Setup**
+
+1. Test API endpoint from a client:
+
+```bash
+curl -vk https://brd-hq-cluster.brd.rw:6443/healthz
+```
+
+* Should return `ok`.
+
+2. Test failover:
+
+```bash
+sudo systemctl stop keepalived  # on cp1
+```
+
+* VIP should move to cp2 automatically.
+* API traffic continues uninterrupted.
+
+---
+
+## **Step 6: Summary**
+
+* **HAProxy** listens on 8443 and balances traffic to all control plane nodes.
+* **Keepalived** manages floating VIP (192.168.10.177) with failover.
+* **iptables NAT** ensures clients use standard port 6443.
+* **No extra hardware needed**; fully HA OpenShift API endpoint.
+Do you want me to do that?
