@@ -47,7 +47,7 @@ spec:
 ```
 OR
 
-```
+```bash
 cat <<'YAML' | kubectl apply -f -
 apiVersion: apps/v1
 kind: DaemonSet
