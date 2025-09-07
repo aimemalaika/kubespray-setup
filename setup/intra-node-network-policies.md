@@ -124,6 +124,106 @@ here’s a clean recap of what we did, why it worked, and what to keep:
   ip -d link show vxlan.calico                      # up, mtu 1450
   ```
 
+
+  Those errors are just the **kube-controller-manager** failing leader-election because it can’t resolve `api.brd-hq-cluster.brd.rw` via the pod’s DNS (169.254.25.10 = NodeLocalDNS). Your `/etc/hosts` entries on the nodes don’t help pods—NodeLocalDNS forwards pure DNS queries and does **not** read `/etc/hosts`, so the FQDN is unknown there.
+
+You’ve got two clean ways to fix it. Pick one; both are safe.
+
+## Option A (recommended now): teach CoreDNS the VIP name
+
+This keeps everything on `api.brd-hq-cluster.brd.rw` and works for all pods.
+
+1. Edit the CoreDNS ConfigMap and add a small `hosts` block with your VIP:
+
+```bash
+kubectl -n kube-system edit configmap coredns
+```
+
+In the `Corefile`, add the block shown below **near the top** of the server (before `forward . /etc/resolv.conf` is fine):
+
+```hcl
+.:53 {
+    errors
+    health
+    hosts {
+        192.168.10.177 api.brd-hq-cluster.brd.rw
+        fallthrough
+    }
+    ready
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+        pods insecure
+        fallthrough in-addr.arpa ip6.arpa
+    }
+    forward . /etc/resolv.conf
+    cache 30
+    loop
+    reload
+    loadbalance
+}
+```
+
+2. Restart CoreDNS:
+
+```bash
+kubectl -n kube-system rollout restart deploy/coredns
+kubectl -n kube-system rollout status deploy/coredns
+```
+
+3. Verify pods can resolve:
+
+```bash
+kubectl -n kube-system exec deploy/coredns -- sh -lc 'nslookup api.brd-hq-cluster.brd.rw 127.0.0.1'
+```
+
+4. Watch the controller-manager recover and DaemonSets start scheduling:
+
+```bash
+kubectl -n kube-system logs -l component=kube-controller-manager --tail=50 | egrep -i 'leader|election' || true
+kubectl -n ingress-nginx get ds ingress-nginx-controller -o wide
+```
+
+## Option B (quick workaround): point control-plane components to the VIP **IP**
+
+This avoids DNS entirely for control-plane→API traffic.
+
+On each control plane node, update only the component kubeconfigs that the controllers use:
+
+```bash
+sudo sed -i 's#https://api\.brd-hq-cluster\.brd\.rw:8443#https://192.168.10.177:8443#g' \
+  /etc/kubernetes/controller-manager.conf \
+  /etc/kubernetes/scheduler.conf
+```
+
+Bounce the static pods so they pick up the change:
+
+```bash
+kubectl -n kube-system delete pod -l component=kube-controller-manager
+kubectl -n kube-system delete pod -l component=kube-scheduler
+```
+
+Then check:
+
+```bash
+kubectl -n kube-system get lease kube-controller-manager -o yaml | grep -E 'holderIdentity|renewTime'
+kubectl -n ingress-nginx get ds ingress-nginx-controller -o wide
+```
+
+---
+
+### Why this happened
+
+* Pods (including control-plane static pods) use **NodeLocalDNS (169.254.25.10)**.
+* Your public/corp DNS doesn’t (yet) have an A record for `api.brd-hq-cluster.brd.rw`.
+* NodeLocalDNS can’t “see” node `/etc/hosts`, so it returned “no such host.”
+
+### Which to choose?
+
+* **Option A** is best if you want to keep using the FQDN cluster-wide without waiting on external DNS.
+* **Option B** is fine as a stopgap—very simple and removes DNS from the control-plane path—but clients outside the cluster will still need DNS for that name.
+
+If you do Option A now, your earlier logs should stop immediately and `DESIRED` for DaemonSets (like `ingress-nginx-controller`) should jump from `0` to your worker count.
+
+
 that’s it. you fixed a tricky **Calico VXLAN + NIC offload** edge case, and you hardened the cluster so it stays fixed.
 
 
