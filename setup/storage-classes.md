@@ -95,7 +95,6 @@ spec:
 
   # --- Placement rules ---
   placement:
-    # MONs on control planes (tainted)
     mon:
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
@@ -113,6 +112,22 @@ spec:
         - key: node-role.kubernetes.io/master
           operator: Exists
           effect: NoSchedule
+      # Add these two blocks:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values: ["rook-ceph-mon"]
+          topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: rook-ceph-mon
 
     # MGR on control planes (same reasoning)
     mgr:
