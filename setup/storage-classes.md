@@ -393,3 +393,35 @@ kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph -s
 ```
 
 and I’ll sanity-check placement (MONs on control planes, OSDs on workers) and health.
+
+Here’s the gist:
+
+* **StorageClass (`s3-buckets`)**
+
+  * Cluster-scoped *template* for S3 buckets.
+  * Create it **once** per cluster. By itself it does nothing.
+
+* **ObjectBucketClaim (OBC)**
+
+  * Namespace-scoped *claim* that references the StorageClass.
+  * **Creates a bucket** in your Ceph RGW and, in that namespace, a **Secret** (AWS keys) + **ConfigMap** (endpoint, bucket name).
+  * Each namespace/app makes its own OBC → gets its **own creds**.
+  * `reclaimPolicy` on the StorageClass applies (e.g., `Delete` vs `Retain`).
+
+* **Can you use the StorageClass directly without an OBC?**
+
+  * **No.** OBC is what triggers bucket provisioning and generates creds.
+
+* **If you don’t want OBCs (manual route):**
+
+  1. Create a `CephObjectStoreUser` (gets Access/Secret keys).
+  2. Create/manage buckets yourself (AWS CLI or SDK).
+  3. Distribute creds as Kubernetes Secrets to the namespaces/apps.
+
+  * K8s won’t manage bucket lifecycle in this mode (no `reclaimPolicy` effect).
+
+**When to choose what**
+
+* Want K8s-native lifecycle + per-namespace creds? → **Use OBCs**.
+* Already manage buckets/creds yourself or treating RGW like external S3? → **Manual route**.
+
