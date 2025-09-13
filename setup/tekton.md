@@ -1,4 +1,74 @@
-Perfect — I see why NodeLocal is still returning NXDOMAIN.
+NXDOMAIN there means the CoreDNS **rewrite isn’t in effect** (or it’s in the wrong place/order), so queries for `*.svc.cluster.local` aren’t being mapped to your real domain.
+
+Here’s the quickest way to verify + fix it.
+
+## 1) Inspect your CoreDNS Corefile
+
+```bash
+kubectl -n kube-system get cm coredns -o yaml | sed -n '1,120p'
+```
+
+You should see a block like `.:53 { ... }` with `kubernetes brd-hq-cluster.brd.rw ...`. If the two `rewrite` lines aren’t there **above** the `kubernetes` plugin, add them.
+
+## 2) Edit CoreDNS and add the rewrites (above `kubernetes`)
+
+```bash
+kubectl -n kube-system edit cm coredns
+```
+
+Inside the main server block (`.:53 { ... }`), make it look like this (keep your other plugins as-is; just add the two `rewrite` lines **before** `kubernetes`):
+
+```
+.:53 {
+    errors
+    health
+    ready
+
+    # Map anything that assumes cluster.local to your real cluster domain.
+    rewrite name suffix svc.cluster.local svc.brd-hq-cluster.brd.rw
+    rewrite name suffix cluster.local    brd-hq-cluster.brd.rw
+
+    kubernetes brd-hq-cluster.brd.rw in-addr.arpa ip6.arpa {
+        pods insecure
+        fallthrough in-addr.arpa ip6.arpa
+        ttl 30
+    }
+
+    # ... keep the rest (forward, cache, loop, prometheus, etc.)
+}
+```
+
+> Order matters: `rewrite` must be **before** `kubernetes` so the query is rewritten first.
+
+## 3) Restart CoreDNS and confirm it’s healthy
+
+```bash
+kubectl -n kube-system rollout restart deploy/coredns
+kubectl -n kube-system rollout status  deploy/coredns
+kubectl -n kube-system logs deploy/coredns --tail=50
+```
+
+(If there’s a typo, CoreDNS will CrashLoop—fix the Corefile and restart again.)
+
+## 4) Re-test DNS (both names)
+
+```bash
+# This should now resolve via the rewrite:
+kubectl -n kube-system run dns-$RANDOM --rm -it --restart=Never --image=busybox:1.36 -- \
+  nslookup kubernetes.default.svc.cluster.local
+
+# And your actual FQDN should already work:
+kubectl -n kube-system run dns-$RANDOM --rm -it --restart=Never --image=busybox:1.36 -- \
+  nslookup kubernetes.default.svc.brd-hq-cluster.brd.rw
+```
+
+You should see an IP (the Kubernetes service ClusterIP) for both.
+
+> Your DNS server `169.254.25.10` indicates **NodeLocal DNSCache** is in use; that’s fine. The rewrite happens in CoreDNS and NodeLocal just forwards—no extra changes needed.
+
+---
+
+
 
 Your **NodeLocal DNS** Corefile only serves these zones:
 
