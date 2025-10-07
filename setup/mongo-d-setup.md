@@ -1,220 +1,113 @@
-Got it! The safest way to have “one replica in case the master goes down” is a MongoDB **replica set**. Quick terminology note: MongoDB calls them **primary** and **secondary** (not master/slave). If you run only **2 data nodes** (primary + one replica), you still need a **third voting member** (usually an **arbiter**) so elections can succeed automatically when one node fails. Below are two solid setups:
+Yep — we can ditch Bitnami and use a different, well-maintained option. The two solid choices are:
 
----
+## Option 1 (recommended): **Percona Server for MongoDB (PSMDB) Operator** via Helm
 
-# Option A (recommended): 2 data nodes + 1 arbiter (saves storage)
+This is a first-class open-source operator with Helm charts from Percona. It deploys a robust replica set (no arbiters needed; use 3 data members). ([Artifact Hub][1])
 
-## Quick install (Helm)
+### Install (namespace = `tugane-sit`)
 
 ```bash
-# Namespace
-kubectl create ns mongo
-
-# Add chart repo
-helm repo add bitnami https://charts.bitnami.com/bitnami
+# Repo
+helm repo add percona https://percona.github.io/percona-helm-charts
 helm repo update
 
-# Install a replicaset with 2 data nodes + 1 arbiter
-helm install mongo bitnami/mongodb -n mongo \
-  --set architecture=replicaset \
-  --set replicaCount=2 \
-  --set arbiter.enabled=true \
-  --set auth.rootUser=admin \
-  --set auth.rootPassword='S3curePassw0rd' \
-  --set auth.replicaSetKey='replica-set-shared-key' \
-  --set persistence.size=20Gi
+# 1) Install the operator
+helm install psmdb-operator percona/psmdb-operator -n tugane-sit --create-namespace
+
+# 2) Install a 3-member replica set managed by the operator
+helm install psmdb percona/psmdb-db -n tugane-sit \
+  --set replsets.rs0.size=3 \
+  --set image.tag=7.0.15-20  \
+  --set replsets.rs0.storage.size=20Gi
 ```
 
-What you get:
-
-* Pods: `mongo-mongodb-0`, `mongo-mongodb-1` (data-bearing) and `mongo-mongodb-arbiter-0` (no data).
-* Headless service for stable DNS.
-* Automatic replica-set init.
-
-Connect (from a pod in the cluster):
+> Check status:
 
 ```bash
-kubectl -n mongo exec -it deploy/mongo-mongodb -- \
-  mongosh "mongodb://admin:S3curePassw0rd@mongo-mongodb-0.mongo-mongodb-headless.mongo.svc.cluster.local,mongo-mongodb-1.mongo-mongodb-headless.mongo.svc.cluster.local/?replicaSet=rs0&authSource=admin"
+kubectl -n tugane-sit get psmdb
+kubectl -n tugane-sit get pods -l app.kubernetes.io/instance=psmdb
 ```
 
-## Why this works
+**Connect**: the operator exposes a headless service per replset; you’ll get a standard MongoDB replica-set URI. (Docs cover CR options, exposure modes, etc.) ([docs.percona.com][2])
 
-* **Elections need a majority.** With 2 data nodes + 1 arbiter, you have **3 votes**. If the primary dies, the secondary + arbiter (2/3) elect a new primary automatically.
-* **Arbiter saves storage/CPU** (no data), but it does not hold data—just votes.
+**Why Percona?** Mature operator, active docs, Helm-native install, and no Bitnami catalog issues. ([docs.percona.com][3])
+
+### Using your private registry + amd64
+
+If you mirror images to `registry.app.brd-hq-cluster.brd.rw` (amd64 only), override the image repo/tag in Helm:
+
+```bash
+helm upgrade psmdb percona/psmdb-db -n tugane-sit --reuse-values \
+  --set image.repository=registry.app.brd-hq-cluster.brd.rw/mirrors/percona/percona-server-mongodb \
+  --set image.tag=7.0.15-20
+```
+
+(When mirroring from macOS, use `--platform=linux/amd64` or `skopeo --override-arch amd64` so your cluster pulls amd64 layers.)
 
 ---
 
-# Option B: 3 data nodes (no arbiter, more resilient, uses more storage)
+## Option 2: **MongoDB Community Kubernetes Operator** (official)
 
-## Minimal DIY manifests (StatefulSet)
+MongoDB’s own operator (community edition). You install the operator (Helm or kubectl), then create a `MongoDBCommunity` CR for a 3-member replica set. Note: their operator doesn’t use arbiters; plan for 3 data members. ([MongoDB][4])
 
-This is a compact example that works on most clusters. Adjust storage class, resources, and passwords as needed.
+### Quick start (operator + CR)
 
-### 1) Secrets (root user + replSet key)
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: mongo-auth
-  namespace: mongo
-type: Opaque
-stringData:
-  MONGODB_ROOT_USER: admin
-  MONGODB_ROOT_PASSWORD: S3curePassw0rd
-  MONGODB_REPLICA_SET_KEY: replica-set-shared-key
+```bash
+# (a) Install operator CRDs & controller (Helm chart exists on Artifact Hub)
+helm repo add mongodb https://mongodb.github.io/helm-charts
+helm repo update
+helm install community-operator mongodb/community-operator -n tugane-sit --create-namespace
+# If CRDs already installed: add --set community-operator-crds.enabled=false
 ```
 
-### 2) Headless Service
+Create a minimal replica-set CR:
 
 ```yaml
-apiVersion: v1
-kind: Service
+# mongo-community.yaml
+apiVersion: mongodbcommunity.mongodb.com/v1
+kind: MongoDBCommunity
 metadata:
-  name: mongodb
-  namespace: mongo
+  name: my-rs
+  namespace: tugane-sit
 spec:
-  clusterIP: None
-  selector:
-    app: mongodb
-  ports:
-  - name: mongo
-    port: 27017
+  members: 3
+  type: ReplicaSet
+  version: "7.0.15"
+  security:
+    authentication:
+      modes: ["SCRAM"]
+  statefulSet:
+    spec:
+      volumeClaimTemplates:
+      - metadata:
+          name: data-volume
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
 ```
 
-### 3) StatefulSet (3 replicas)
-
-```yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mongodb
-  namespace: mongo
-spec:
-  serviceName: mongodb
-  replicas: 3
-  selector:
-    matchLabels:
-      app: mongodb
-  template:
-    metadata:
-      labels:
-        app: mongodb
-    spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: mongodb
-              topologyKey: kubernetes.io/hostname
-      containers:
-      - name: mongod
-        image: mongo:6.0
-        args: ["--replSet", "rs0", "--bind_ip_all"]
-        ports:
-        - containerPort: 27017
-          name: mongo
-        env:
-        - name: MONGO_INITDB_ROOT_USERNAME
-          valueFrom: { secretKeyRef: { name: mongo-auth, key: MONGODB_ROOT_USER } }
-        - name: MONGO_INITDB_ROOT_PASSWORD
-          valueFrom: { secretKeyRef: { name: mongo-auth, key: MONGODB_ROOT_PASSWORD } }
-        - name: MONGODB_REPLICA_SET_KEY
-          valueFrom: { secretKeyRef: { name: mongo-auth, key: MONGODB_REPLICA_SET_KEY } }
-        volumeMounts:
-        - name: data
-          mountPath: /data/db
-        - name: keyfile
-          mountPath: /opt/mongo
-          readOnly: true
-      initContainers:
-      - name: init-keyfile
-        image: mongo:6.0
-        command: ["bash","-lc","cat <<EOF >/opt/mongo/keyfile && chmod 400 /opt/mongo/keyfile && chown 999:999 /opt/mongo/keyfile
-$(MONGODB_REPLICA_SET_KEY)
-EOF"]
-        env:
-        - name: MONGODB_REPLICA_SET_KEY
-          valueFrom: { secretKeyRef: { name: mongo-auth, key: MONGODB_REPLICA_SET_KEY } }
-        volumeMounts:
-        - name: keyfile
-          mountPath: /opt/mongo
-      securityContext:
-        fsGroup: 999
-      volumes:
-      - name: keyfile
-        emptyDir: {}
-      terminationGracePeriodSeconds: 30
-  volumeClaimTemplates:
-  - metadata:
-      name: data
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: 20Gi
-```
-
-Apply:
+Apply it:
 
 ```bash
-kubectl create ns mongo
-kubectl apply -f mongo-secrets.yaml
-kubectl apply -f mongo-svc.yaml
-kubectl apply -f mongo-statefulset.yaml
+kubectl apply -f mongo-community.yaml
+kubectl -n tugane-sit get mongodbcommunity my-rs
 ```
 
-### 4) Initialize the replica set once pods are Ready
-
-```bash
-# Get a shell in the first pod
-kubectl -n mongo exec -it mongodb-0 -- mongosh -u admin -p 'S3curePassw0rd' --authenticationDatabase admin
-
-# In mongosh:
-rs.initiate({
-  _id: "rs0",
-  members: [
-    { _id: 0, host: "mongodb-0.mongodb.mongo.svc.cluster.local:27017" },
-    { _id: 1, host: "mongodb-1.mongodb.mongo.svc.cluster.local:27017" },
-    { _id: 2, host: "mongodb-2.mongodb.mongo.svc.cluster.local:27017" }
-  ]
-})
-rs.status()
-```
+(See the operator docs for install/config details.) ([MongoDB][4])
 
 ---
 
-## How the replica/failover works (both options)
+## Which should we use?
 
-* **Replication:** The **primary** accepts writes; secondaries replicate via the oplog (a rolling log of operations). Replication is near-real-time.
-* **Elections & quorum:** Members vote to choose a primary. You need **majority votes** to elect/keep a primary.
+* **Percona Operator (PSMDB)**: best balance of simplicity + production features, great docs and Helm UX. My pick for your case. ([docs.percona.com][3])
+* **MongoDB Community Operator**: official, lean; good if you want “vanilla” community MongoDB and are comfortable with operator CRs. ([GitHub][5])
 
-  * With **2 data + 1 arbiter** (3 votes): if the primary dies, the secondary + arbiter (2/3) elect a new primary automatically.
-  * With **3 data nodes** (3 votes): if one node dies, the other two elect a new primary.
-  * With **only 2 nodes and no arbiter** (2 votes): if one dies, the survivor **cannot** form a majority alone → **no automatic primary → writes stop** (reads from the remaining secondary are still possible with `readPreference=secondary`).
-* **Write safety:** Use `writeConcern: "majority"` so writes are acknowledged only after being replicated to a majority, ensuring durability across failover.
-* **Read routing:** Apps typically connect using a replica set URI (multiple hosts + `replicaSet=rs0`). Drivers automatically discover the current primary and reroute writes after failover. You can set `readPreference` to control reads (e.g., `primary`, `primaryPreferred`, `secondary`).
+If you tell me your storage class name and whether you want to **pull from your private registry** only, I’ll drop in exact Helm values (including amd64-only images and resource limits) for the option you choose.
 
----
-
-## Production hardening checklist
-
-* **PodDisruptionBudget** (e.g., `minAvailable: 2`) to avoid voluntary disruptions taking down majority.
-* **Pod anti-affinity** (already shown) so members land on different nodes/zones.
-* **Storage class & IOPS** sized for your workload; enable volume expansion.
-* **Resource requests/limits** on pods.
-* **TLS + SCRAM** auth; rotate the replica-set key.
-* **Backup** (e.g., Velero + volume snapshots, or `mongodump`/Oplog backup).
-* **Liveness/Readiness** probes tuned for elections and startup timeouts.
-
----
-
-### TL;DR for your ask
-
-If by “one replica” you mean **one extra copy** of the data, use **Option A** (2 data nodes + 1 arbiter). That gives you automatic failover when the primary goes down without paying for a third data disk. If you prefer no arbiter, run **3 data nodes**.
-
-If you’d like, tell me your preferred path (Helm vs. manifests) and your storage class name, and I’ll tailor the exact YAML/values for your cluster.
+[1]: https://artifacthub.io/packages/helm/percona/psmdb-operator?utm_source=chatgpt.com "psmdb-operator 1.20.1 · percona/percona - artifacthub.io"
+[2]: https://docs.percona.com/percona-operator-for-mongodb/operator.html?utm_source=chatgpt.com "Custom Resource options - Percona Operator for MongoDB"
+[3]: https://docs.percona.com/percona-operator-for-mongodb/helm.html?utm_source=chatgpt.com "With Helm - Percona Operator for MongoDB"
+[4]: https://www.mongodb.com/docs/kubernetes/current/tutorial/install-k8s-operator/?utm_source=chatgpt.com "Install the MongoDB Controllers for Kubernetes Operator - MongoDB ..."
+[5]: https://github.com/mongodb/mongodb-kubernetes-operator?utm_source=chatgpt.com "MongoDB Community Kubernetes Operator - GitHub"
