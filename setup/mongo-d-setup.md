@@ -111,3 +111,50 @@ If you tell me your storage class name and whether you want to **pull from your 
 [3]: https://docs.percona.com/percona-operator-for-mongodb/helm.html?utm_source=chatgpt.com "With Helm - Percona Operator for MongoDB"
 [4]: https://www.mongodb.com/docs/kubernetes/current/tutorial/install-k8s-operator/?utm_source=chatgpt.com "Install the MongoDB Controllers for Kubernetes Operator - MongoDB ..."
 [5]: https://github.com/mongodb/mongodb-kubernetes-operator?utm_source=chatgpt.com "MongoDB Community Kubernetes Operator - GitHub"
+
+
+helm install psmdb percona/psmdb-db -n tugane-sit \
+>   --set replsets.rs0.size=2 \
+>   --set replsets.rs0.arbiter.enabled=true \
+>   --set replsets.rs0.arbiter.size=1 \
+>   --set replsets.rs0.storage.size=5Gi \
+>   --set image.tag=7.0.15-20
+I1007 10:59:33.995591   94232 warnings.go:110] "Warning: unknown field \"spec.replsets[0].storage.size\""
+NAME: psmdb
+LAST DEPLOYED: Tue Oct  7 10:59:32 2025
+NAMESPACE: tugane-sit
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+#
+
+                    %                        _____
+                   %%%                      |  __ \
+                 ###%%%%%%%%%%%%*           | |__) |__ _ __ ___ ___  _ __   __ _
+                ###  ##%%      %%%%         |  ___/ _ \ '__/ __/ _ \| '_ \ / _` |
+              ####     ##%       %%%%       | |  |  __/ | | (_| (_) | | | | (_| |
+             ###        ####      %%%       |_|   \___|_|  \___\___/|_| |_|\__,_|
+           ,((###         ###     %%%        _      _          _____                       _
+          (((( (###        ####  %%%%       | |   / _ \       / ____|                     | |
+         (((     ((#         ######         | | _| (_) |___  | (___   __ _ _   _  __ _  __| |
+       ((((       (((#        ####          | |/ /> _ </ __|  \___ \ / _` | | | |/ _` |/ _` |
+      /((          ,(((        *###         |   <| (_) \__ \  ____) | (_| | |_| | (_| | (_| |
+    ////             (((         ####       |_|\_\\___/|___/ |_____/ \__, |\__,_|\__,_|\__,_|
+   ///                ((((        ####                                  | |
+ /////////////(((((((((((((((((########                                 |_|   Join @ percona.com/k8s
+
+
+Join Percona Squad! Get early access to new product features, invite-only ”ask me anything” sessions with Percona Kubernetes experts, and monthly swag raffles.
+
+>>> https://percona.com/k8s <<<
+
+Percona Server for MongoDB cluster is deployed now. Get the username and password:
+
+  ADMIN_USER=$(kubectl -n tugane-sit get secrets psmdb-psmdb-db-secrets -o jsonpath="{.data.MONGODB_USER_ADMIN_USER}" | base64 --decode)
+  ADMIN_PASSWORD=$(kubectl -n tugane-sit get secrets psmdb-psmdb-db-secrets -o jsonpath="{.data.MONGODB_USER_ADMIN_PASSWORD}" | base64 --decode)
+
+Connect to the cluster:
+
+  kubectl run -i --rm --tty percona-client --image=percona/percona-server-mongodb:7.0 --restart=Never \
+  -- mongosh "mongodb://${ADMIN_USER}:${ADMIN_PASSWORD}@psmdb-psmdb-db-mongos.tugane-sit.svc.cluster.local/admin?ssl=false"
