@@ -1,46 +1,74 @@
-You’re applying a **Helm values file** with `kubectl`.
-`psmdb-values.yaml` doesn’t (and shouldn’t) contain `apiVersion` or `kind`, so `kubectl apply -f psmdb-values.yaml` errors with “apiVersion not set, kind not set”.
+Got it, barafinda — that’s a **Helm values file for Percona’s `psmdb-db` chart**. Use Helm (not `kubectl apply`) and you’ll be fine.
 
-### Fix options
+### 1) Two small fixes in your values
 
-**A) Use Helm (correct way for a values.yaml)**
+* `sharding.mongos.expose.exposeType` → **`sharding.mongos.expose.type`** (the chart expects `type`). ([Percona Documentation][1])
+* Put the pull policy **inside** the `image` block (the chart uses `image.pullPolicy`):
+
+```diff
+ image:
+   repository: registry.kube-system.svc:5000/percona-server-mongodb
+   tag: "7.0.24-13"
+- imagePullPolicy: IfNotPresent
++  pullPolicy: IfNotPresent
+```
+
+### 2) Install the Operator (once per cluster/namespace)
 
 ```bash
-# if needed
 helm repo add percona https://percona.github.io/percona-helm-charts
 helm repo update
 
-# install/upgrade using your values file
-helm install psmdb <chart-name> -f psmdb-values.yaml
-# or, if already installed
-helm upgrade psmdb <chart-name> -f psmdb-values.yaml
+# choose a namespace; example: percona
+kubectl create ns percona
+
+helm install psmdb-operator percona/psmdb-operator -n percona
 ```
 
-Replace `<chart-name>` with the Percona chart you mean to use (e.g., the operator or the DB chart). You can discover it with:
+(That chart deploys the **Percona Operator for MongoDB** and its CRDs.) ([Artifact Hub][2])
+
+### 3) Install your sharded DB using this values file
 
 ```bash
-helm search repo percona | grep psmdb
+# after the two tweaks above
+helm install mongo-rs percona/psmdb-db -n percona -f psmdb-values.yaml
+# later updates:
+helm upgrade mongo-rs percona/psmdb-db -n percona -f psmdb-values.yaml
 ```
 
-**B) If you really want to use `kubectl`, render first then apply**
+(Official docs show `helm install <release> percona/psmdb-db ...`.) ([Percona Documentation][3])
+
+### 4) Verify it’s healthy
 
 ```bash
-helm template psmdb <chart-name> -f psmdb-values.yaml \
-  | kubectl apply -f -
+kubectl -n percona get psmdb
+kubectl -n percona get pods -l app.kubernetes.io/instance=mongo-rs
+kubectl -n percona get svc -l app.kubernetes.io/component=mongos
 ```
 
-**C) If this file is supposed to be a Kubernetes manifest (not a Helm values file)**
-Then it must include `apiVersion` and `kind` at the top of **every** document. Open `psmdb-values.yaml` and confirm whether it looks like:
+### 5) If you *must* use `kubectl apply`
 
-```yaml
-apiVersion: psmdb.percona.com/v1
-kind: PerconaServerMongoDB
-metadata: ...
-spec: ...
+Render the chart (including CRDs) then pipe to kubectl:
+
+```bash
+helm template mongo-rs percona/psmdb-db -n percona -f psmdb-values.yaml --include-crds \
+  | kubectl apply -n percona -f -
 ```
 
-If not, it’s a values file; use A or B. If yes, the file name is misleading—rename it and ensure each `---`-separated document has those two fields.
+(Helm templating the DB chart is supported; Operator manages the CR.) ([Percona Community Forum][4])
 
 ---
 
-If you paste a few top lines of your `psmdb-values.yaml` (just the headers), I can tell you which path you’re on and give you the exact Helm command.
+#### Notes on your settings
+
+* `sharding.enabled: true` with `mongos` and `configsvrReplSet` blocks matches the Operator’s sharding model. Keep `expose.type: ClusterIP` if you only need in-cluster access. ([Percona Documentation][5])
+* Your `configuration:` stanzas placing `authenticationMechanisms` under each replset/configsvr are correct for modern Operator versions (options moved under `replsets[].configuration`). ([Percona Community Forum][6])
+
+If you want, paste your **namespace** and whether the Operator is already running, and I’ll give you the exact commands tailored to your setup.
+
+[1]: https://docs.percona.com/percona-operator-for-mongodb/expose.html?utm_source=chatgpt.com "Percona Operator for MongoDB - Exposing the cluster"
+[2]: https://artifacthub.io/packages/helm/percona/psmdb-operator?utm_source=chatgpt.com "psmdb-operator 1.20.1 · percona/percona - artifacthub.io"
+[3]: https://docs.percona.com/percona-operator-for-mongodb/helm.html?utm_source=chatgpt.com "With Helm - Percona Operator for MongoDB"
+[4]: https://forums.percona.com/t/helm-chart-percona-psmdb-db-does-include-crds/17518?utm_source=chatgpt.com "Helm chart percona/psmdb-db does include CRDs"
+[5]: https://docs.percona.com/percona-operator-for-mongodb/sharding.html?utm_source=chatgpt.com "MongoDB sharding - Percona Operator for MongoDB"
+[6]: https://forums.percona.com/t/helm-upgrade-from-1-11-to-1-12-confusing-crds/17027/1?utm_source=chatgpt.com "Helm Upgrade from 1.11 to 1.12 confusing crds - Percona Operator for ..."
