@@ -72,3 +72,18 @@ If you want, paste your **namespace** and whether the Operator is already runnin
 [4]: https://forums.percona.com/t/helm-chart-percona-psmdb-db-does-include-crds/17518?utm_source=chatgpt.com "Helm chart percona/psmdb-db does include CRDs"
 [5]: https://docs.percona.com/percona-operator-for-mongodb/sharding.html?utm_source=chatgpt.com "MongoDB sharding - Percona Operator for MongoDB"
 [6]: https://forums.percona.com/t/helm-upgrade-from-1-11-to-1-12-confusing-crds/17027/1?utm_source=chatgpt.com "Helm Upgrade from 1.11 to 1.12 confusing crds - Percona Operator for ..."
+
+
+
+Percona Server for MongoDB cluster is deployed now. Get the username and password:
+
+  ADMIN_USER=$(kubectl -n tugane-sit get secrets mongo-rs-psmdb-db-secrets -o jsonpath="{.data.MONGODB_USER_ADMIN_USER}" | base64 --decode)
+  ADMIN_PASSWORD=$(kubectl -n tugane-sit get secrets mongo-rs-psmdb-db-secrets -o jsonpath="{.data.MONGODB_USER_ADMIN_PASSWORD}" | base64 --decode)
+
+Connect to the cluster:
+
+  kubectl run -i --rm --tty percona-client --image=percona/percona-server-mongodb:7.0 --restart=Never \
+  -- mongosh "mongodb://${ADMIN_USER}:${ADMIN_PASSWORD}@mongo-rs-psmdb-db-mongos.tugane-sit.svc.cluster.local/admin?ssl=false"
+aimemalaika@MacBook-Pro-3 mongo-db %   ADMIN_USER=$(kubectl -n tugane-sit get secrets mongo-rs-psmdb-db-secrets -o jsonpath="{.data.MONGODB_USER_ADMIN_USER}" | base64 --decode)
+  ADMIN_PASSWORD=$(kubectl -n tugane-sit get secrets mongo-rs-psmdb-db-secrets -o jsonpath="{.data.MONGODB_USER_ADMIN_PASSWORD}" | base64 --decode)
+aimemalaika@MacBook-Pro-3 mongo-db %
